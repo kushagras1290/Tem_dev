@@ -20,25 +20,30 @@ def get_db():
     return conn
 
 def init_db():
-    with app.app_context():
-        db = get_db()
-        db.execute('''
-            CREATE TABLE IF NOT EXISTS orders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                order_number TEXT UNIQUE NOT NULL,
-                items TEXT NOT NULL,
-                subtotal REAL NOT NULL,
-                tax REAL NOT NULL,
-                discount REAL DEFAULT 0,
-                total REAL NOT NULL,
-                customer_name TEXT,
-                customer_phone TEXT,
-                payment_method TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        db.commit()
-        db.close()
+    db = get_db()
+    db.execute('''
+        CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_number TEXT UNIQUE NOT NULL,
+            items TEXT NOT NULL,
+            subtotal REAL NOT NULL,
+            tax REAL NOT NULL,
+            discount REAL DEFAULT 0,
+            total REAL NOT NULL,
+            customer_name TEXT,
+            customer_phone TEXT,
+            payment_method TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    db.commit()
+    db.close()
+
+# Initialize DB on import
+try:
+    init_db()
+except:
+    pass
 
 MENU = {
     'waffles': [
@@ -61,6 +66,16 @@ HTML_TEMPLATE = '''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><m
 @app.route('/')
 def index():
     return render_template_string(HTML_TEMPLATE)
+
+@app.route('/health')
+def health():
+    try:
+        db = get_db()
+        db.execute('SELECT 1 FROM orders LIMIT 1')
+        db.close()
+        return jsonify({'status': 'ok', 'database': 'connected'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'database': str(e)}), 500
 
 @app.route('/api/menu')
 def get_menu():
@@ -94,6 +109,7 @@ def save_order():
         db.close()
         return jsonify({'success': True, 'order_number': order_number})
     except Exception as e:
+        print(f"Error saving order: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 400
 
 @app.route('/api/orders')
@@ -104,6 +120,7 @@ def get_orders():
         db.close()
         return jsonify({'success': True, 'orders': [{'id': o['id'], 'order_number': o['order_number'], 'items': json.loads(o['items']), 'subtotal': o['subtotal'], 'tax': o['tax'], 'discount': o['discount'], 'total': o['total'], 'customer_name': o['customer_name'], 'customer_phone': o['customer_phone'], 'payment_method': o['payment_method'], 'created_at': o['created_at']} for o in orders]})
     except Exception as e:
+        print(f"Error getting orders: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 400
 
 @app.route('/api/order/<order_number>')
@@ -139,6 +156,7 @@ def get_stats():
         db.close()
         return jsonify({'success': True, 'today': {'orders': today_orders['count'] or 0, 'revenue': today_orders['revenue'] or 0}, 'total': {'orders': total_stats['count'] or 0, 'revenue': total_stats['revenue'] or 0}})
     except Exception as e:
+        print(f"Error getting stats: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 400
 
 @app.route('/api/generate-pdf/<order_number>')
@@ -152,10 +170,21 @@ def generate_pdf(order_number):
         buffer = BytesIO()
         c = canvas.Canvas(buffer, pagesize=letter)
         width, height = letter
-        c.setFont("Helvetica-Bold", 20)
-        c.drawString(50, height - 50, "RAINBOW WAFFEL")
-        c.setFont("Helvetica", 10)
-        c.drawString(50, height - 70, "NIMS MELA - Where every bite brings a smile!")
+        
+        def draw_header(c):
+            c.setFont("Helvetica-Bold", 20)
+            c.drawString(50, height - 50, "RAINBOW WAFFEL")
+            c.setFont("Helvetica", 10)
+            c.drawString(50, height - 70, "NIMS MELA - Where every bite brings a smile!")
+        
+        def draw_footer(c, page_num):
+            c.setFont("Helvetica-Oblique", 9)
+            c.drawString(50, 30, "Thank you! Celebrate sweetness at waffles and friends.")
+            c.drawString(width - 100, 30, f"Page {page_num}")
+        
+        page_num = 1
+        draw_header(c)
+        
         c.setFont("Helvetica-Bold", 12)
         c.drawString(50, height - 100, f"Order #: {order['order_number']}")
         c.setFont("Helvetica", 10)
@@ -164,6 +193,7 @@ def generate_pdf(order_number):
             c.drawString(50, height - 130, f"Customer: {order['customer_name']}")
         if order['customer_phone']:
             c.drawString(50, height - 145, f"Phone: {order['customer_phone']}")
+        
         y = height - 180
         c.setFont("Helvetica-Bold", 11)
         c.drawString(50, y, "Item")
@@ -173,13 +203,37 @@ def generate_pdf(order_number):
         c.line(50, y - 5, width - 50, y - 5)
         y -= 20
         c.setFont("Helvetica", 10)
+        
         items = json.loads(order['items'])
         for item in items:
+            if y < 100:
+                draw_footer(c, page_num)
+                c.showPage()
+                page_num += 1
+                draw_header(c)
+                y = height - 100
+                c.setFont("Helvetica-Bold", 11)
+                c.drawString(50, y, "Item")
+                c.drawString(350, y, "Qty")
+                c.drawString(420, y, "Price")
+                c.drawString(500, y, "Total")
+                c.line(50, y - 5, width - 50, y - 5)
+                y -= 20
+                c.setFont("Helvetica", 10)
+            
             c.drawString(50, y, item['name'][:40])
             c.drawString(350, y, str(item['quantity']))
             c.drawString(420, y, f"₹{item['price']}")
             c.drawString(500, y, f"₹{item['price'] * item['quantity']}")
             y -= 15
+        
+        if y < 150:
+            draw_footer(c, page_num)
+            c.showPage()
+            page_num += 1
+            draw_header(c)
+            y = height - 100
+        
         y -= 20
         c.line(50, y, width - 50, y)
         y -= 20
@@ -199,8 +253,8 @@ def generate_pdf(order_number):
         y -= 30
         c.setFont("Helvetica", 10)
         c.drawString(50, y, f"Payment: {order['payment_method']}")
-        c.setFont("Helvetica-Oblique", 9)
-        c.drawString(50, 50, "Thank you! Celebrate sweetness at waffles and friends.")
+        
+        draw_footer(c, page_num)
         c.save()
         buffer.seek(0)
         return send_file(buffer, mimetype='application/pdf', as_attachment=True, download_name=f'order_{order_number}.pdf')
